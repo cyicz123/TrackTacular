@@ -1,0 +1,51 @@
+[project]
+name = "tracktacular"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "torch==1.13.1+cu117",
+  "torchvision==0.14.1+cu117",
+  "numpy==1.24.2",
+  "mmcv==2.0.0rc3",
+  "opencv-python==4.7.0.72",
+  "scipy==1.10.1",
+  "Pillow==9.5.0",
+  
+  # Framework and Utilities
+  "lightning[extra]==2.0.2",
+  "kornia==0.6.11",
+  "einops==0.6.1",
+  "timm==0.9.2",
+  "imgaug==0.4.0",
+  "efficientnet_pytorch",
+  
+  # Metrics and Tracking
+  # "lap==0.4.0",
+  "lap",
+  "motmetrics==1.4.0",
+  "pytorch_metric_learning==2.2.0",
+  
+  # Other
+  "nuscenes-devkit==1.1.10",
+  "matplotlib",
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu117"},
+]
+torchvision = [
+  { index = "pytorch-cu117"},
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu117"
+url = "https://download.pytorch.org/whl/cu117"
+explicit = true
