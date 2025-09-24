@@ -1,6 +1,8 @@
 import os.path as osp
 import torch
 import lightning as pl
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 

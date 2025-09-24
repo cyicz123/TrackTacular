@@ -215,3 +215,5 @@ WorldTrack/.ipynb_checkpoints/
 # IDEs
 .idea
 .vscode
+WorldTrack/lightning_logs
+WorldTrack/Wildtrack_dataset
