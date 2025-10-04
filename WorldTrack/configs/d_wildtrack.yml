@@ -1,12 +1,36 @@
+# ==================== 数据集配置文件 (d_wildtrack.yml) ====================
+# 本文件定义 Wildtrack 数据集的特定参数
+
+# 数据加载配置
 data:
+  # 数据模块类路径
   class_path: datasets.PedestrianDataModule
   init_args:
+    # 数据集根目录
     data_dir: "/root/autodl-tmp/TrackTacular/WorldTrack/Wildtrack_dataset"
+
+# 模型配置（覆盖默认配置）
 model:
-  resolution: [120, 4, 360]  # Y,Z,X
-  bounds: [0, 1440, 0, 480, 0, 200]  # xmin,xmax,ymin,ymax,zmin,zmax
+  # BEV网格分辨率：[Y轴, Z轴, X轴]
+  # Y=120（前后方向）, Z=4（高度方向，较小因为行人高度范围有限）, X=360（左右方向）
+  resolution: [120, 4, 360]
+  
+  # 世界坐标系边界：[x最小值, x最大值, y最小值, y最大值, z最小值, z最大值]
+  # 单位：厘米 (Wildtrack使用厘米作为单位)
+  # x范围：0-1440cm, y范围：0-480cm, z范围：0-200cm（高度）
+  bounds: [0, 1440, 0, 480, 0, 200]
+  
+  # 深度配置：[深度bin数量, 最小深度(米), 最大深度(米)]
+  # 32个深度层，范围从250cm到3250cm
   depth: [32, 250, 3250]
+  
+  # 相机数量：Wildtrack数据集有7个相机
   num_cameras: 7
+  
+  # 是否使用时序缓存（利用前一帧的BEV特征）
   use_temporal_cache: False
+
+# 训练器配置覆盖
 trainer:
+  # 针对Wildtrack数据集，训练30个epoch
   max_epochs: 30

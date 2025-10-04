@@ -1,107 +1,181 @@
+# ==================== TrackTacular 主训练模型 ====================
+# 本文件定义了完整的多视角3D目标检测和跟踪训练流程
+# 基于 PyTorch Lightning 框架，集成了：
+# 1. 多种模型架构（Liftnet, MVDet, Segnet, BEVFormer）
+# 2. 损失计算和优化
+# 3. 训练、验证、测试流程
+# 4. 评估指标计算（MODA, MODP, MOTA等）
+# 5. 多目标跟踪
+
 import os.path as osp
 import torch
 import lightning as pl
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg')  # 使用非交互式后端，适合服务器环境
 import matplotlib.pyplot as plt
 import numpy as np
 
+# 导入各种模型架构
 from models import Segnet, MVDet, Liftnet, Bevformernet
+# 导入损失函数
 from models.loss import FocalLoss, compute_rot_loss
+# 导入多目标跟踪器
 from tracking.multitracker import JDETracker
+# 导入工具函数
 from utils import vox, basic, decode
+# 导入评估工具
 from evaluation.mod import modMetricsCalculator
 from evaluation.mot_bev import mot_metrics
 
 
 class WorldTrackModel(pl.LightningModule):
+    """
+    WorldTrack 主训练模型
+    
+    这是整个系统的核心类，继承自 PyTorch Lightning 的 LightningModule
+    负责：
+    - 模型初始化和前向传播
+    - 损失计算和反向传播  
+    - 训练/验证/测试流程管理
+    - 评估指标计算
+    - 多目标跟踪
+    """
     def __init__(
             self,
-            model_name='segnet',
-            encoder_name='res18',
-            learning_rate=0.001,
-            resolution=(200, 4, 200),
-            bounds=(-75, 75, -75, 75, -1, 5),
-            num_cameras=None,
-            depth=(100, 2.0, 25),
-            scene_centroid=(0.0, 0.0, 0.0),
-            max_detections=60,
-            conf_threshold=0.5,
-            num_classes=1,
-            use_temporal_cache=True,
-            z_sign=1,
-            feat2d_dim=128,
+            model_name='segnet',  # 模型架构名称
+            encoder_name='res18',  # 编码器backbone名称
+            learning_rate=0.001,  # 学习率
+            resolution=(200, 4, 200),  # BEV网格分辨率 (Y, Z, X)
+            bounds=(-75, 75, -75, 75, -1, 5),  # 世界坐标边界 (xmin, xmax, ymin, ymax, zmin, zmax)
+            num_cameras=None,  # 相机数量
+            depth=(100, 2.0, 25),  # 深度配置 (D, DMIN, DMAX)
+            scene_centroid=(0.0, 0.0, 0.0),  # 场景中心点
+            max_detections=60,  # 每帧最大检测数量
+            conf_threshold=0.5,  # 置信度阈值
+            num_classes=1,  # 目标类别数（行人检测为1）
+            use_temporal_cache=True,  # 是否使用时序缓存
+            z_sign=1,  # Z轴方向符号
+            feat2d_dim=128,  # 2D特征维度
     ):
+        """
+        初始化 WorldTrack 模型
+        
+        参数说明:
+            model_name: 选择的模型架构 ('segnet', 'liftnet', 'mvdet', 'bevformer')
+            encoder_name: 图像编码器类型 ('res18', 'res50', 'res101', 'effb0', 'effb4', 'swin_t')
+            learning_rate: 优化器学习率
+            resolution: BEV空间的体素网格分辨率
+            bounds: BEV空间的物理边界（单位：米或厘米，取决于数据集）
+            num_cameras: 相机数量（None表示自动从数据获取）
+            depth: 深度相关配置（离散化层数、最小深度、最大深度）
+            scene_centroid: 场景的几何中心，用于坐标变换
+            max_detections: 单帧最大目标数量限制
+            conf_threshold: 检测置信度阈值
+            num_classes: 目标类别数量
+            use_temporal_cache: 是否缓存前一帧的BEV特征用于时序融合
+            z_sign: Z轴方向（1表示向上为正，-1表示向下为正）
+            feat2d_dim: 2D图像特征的维度
+        """
         super().__init__()
+        
+        # ==================== 保存基础配置参数 ====================
         self.model_name = model_name
         self.encoder_name = encoder_name
         self.learning_rate = learning_rate
         self.resolution = resolution
-        self.Y, self.Z, self.X = self.resolution
+        self.Y, self.Z, self.X = self.resolution  # 解包BEV网格尺寸
         self.bounds = bounds
         self.max_detections = max_detections
-        self.D, self.DMIN, self.DMAX = depth
+        self.D, self.DMIN, self.DMAX = depth  # 解包深度配置
         self.conf_threshold = conf_threshold
 
-        # Loss
+        # ==================== 初始化损失函数 ====================
+        # 使用 Focal Loss 处理中心点检测的类别不平衡问题
         self.center_loss_fn = FocalLoss()
 
-        # Temporal cache
+        # ==================== 时序缓存配置 ====================
+        # 用于存储前几帧的BEV特征，实现时序信息融合
         self.use_temporal_cache = use_temporal_cache
-        self.max_cache = 32
+        self.max_cache = 32  # 最大缓存帧数
+        # 缓存帧索引，-2表示未使用的缓存槽
         self.temporal_cache_frames = -2 * torch.ones(self.max_cache, dtype=torch.long)
-        self.temporal_cache = None
+        self.temporal_cache = None  # 实际的特征缓存
 
-        # Test
-        self.moda_gt_list, self.moda_pred_list = [], []
-        self.mota_gt_list, self.mota_pred_list = [], []
-        self.mota_seq_gt_list, self.mota_seq_pred_list = [], []
-        self.frame = 0
+        # ==================== 测试和评估相关变量 ====================
+        # 用于存储测试过程中的检测和跟踪结果，最后统一计算评估指标
+        self.moda_gt_list, self.moda_pred_list = [], []  # MODA评估用的GT和预测
+        self.mota_gt_list, self.mota_pred_list = [], []  # MOTA评估用的GT和预测  
+        self.mota_seq_gt_list, self.mota_seq_pred_list = [], []  # 序列级MOTA评估
+        self.frame = 0  # 当前处理的帧号
+        # 初始化多目标跟踪器
         self.test_tracker = JDETracker(conf_thres=self.conf_threshold)
 
-        # Model
+        # ==================== 模型架构初始化 ====================
+        # 处理相机数量参数（0表示None）
         num_cameras = None if num_cameras == 0 else num_cameras
+        
+        # 根据指定的模型名称初始化对应的模型架构
         if model_name == 'segnet':
+            # Segnet: 基于分割的多视角检测模型
             self.model = Segnet(self.Y, self.Z, self.X, num_cameras=num_cameras, feat2d_dim=feat2d_dim,
                                 encoder_type=self.encoder_name, num_classes=num_classes, z_sign=z_sign)
         elif model_name == 'liftnet':
+            # Liftnet: 基于深度提升的多视角检测模型（本项目主要使用）
             self.model = Liftnet(self.Y, self.Z, self.X, encoder_type=self.encoder_name, feat2d_dim=feat2d_dim,
                                  DMIN=self.DMIN, DMAX=self.DMAX, D=self.D, num_classes=num_classes, z_sign=z_sign,
                                  num_cameras=num_cameras)
         elif model_name == 'bevformer':
+            # BEVFormer: 基于Transformer的BEV检测模型
             self.model = Bevformernet(self.Y, self.Z, self.X, feat2d_dim=feat2d_dim,
                                       encoder_type=self.encoder_name, num_classes=num_classes, z_sign=z_sign)
         elif model_name == 'mvdet':
+            # MVDet: 经典的多视角检测模型
             self.model = MVDet(self.Y, self.Z, self.X, encoder_type=self.encoder_name,
                                num_cameras=num_cameras, num_classes=num_classes)
         else:
             raise ValueError(f'Unknown model name {self.model_name}')
 
+        # ==================== 几何工具初始化 ====================
+        # 场景中心点，用于坐标变换的参考点
         self.scene_centroid = torch.tensor(scene_centroid, device=self.device).reshape([1, 3])
+        # 体素化工具：处理世界坐标与BEV网格坐标的转换
         self.vox_util = vox.VoxelUtil(self.Y, self.Z, self.X, scene_centroid=self.scene_centroid, bounds=self.bounds)
+        
+        # 保存所有超参数到checkpoint中
         self.save_hyperparameters()
 
     def forward(self, item):
         """
-        B = batch size, S = number of cameras, C = 3, H = img height, W = img width
-        rgb_cams: (B,S,C,H,W)
-        pix_T_cams: (B,S,4,4)
-        cams_T_global: (B,S,4,4)
-        ref_T_global: (B,4,4)
-        vox_util: vox util object
+        模型前向传播
+        
+        参数:
+            item: 输入数据字典，包含：
+                - img: 多视角图像 (B, S, C, H, W)
+                - intrinsic: 相机内参 (B, S, 4, 4)
+                - extrinsic: 相机外参 (B, S, 4, 4)
+                - ref_T_global: 参考系到全局坐标变换 (B, 4, 4)
+                - frame: 帧号
+        
+        返回:
+            output: 模型输出字典，包含检测结果
         """
+        # ==================== 加载时序缓存 ====================
+        # 尝试从缓存中加载前一帧的BEV特征
         prev_bev = self.load_cache(item['frame'].cpu())
 
+        # ==================== 模型前向传播 ====================
         output = self.model(
-            rgb_cams=item['img'],
-            pix_T_cams=item['intrinsic'],
-            cams_T_global=item['extrinsic'],
-            ref_T_global=item['ref_T_global'],
-            vox_util=self.vox_util,
-            prev_bev=prev_bev,
+            rgb_cams=item['img'],  # 多视角RGB图像
+            pix_T_cams=item['intrinsic'],  # 像素到相机坐标的变换矩阵
+            cams_T_global=item['extrinsic'],  # 相机到全局坐标的变换矩阵
+            ref_T_global=item['ref_T_global'],  # 参考系到全局坐标的变换矩阵
+            vox_util=self.vox_util,  # 体素化工具
+            prev_bev=prev_bev,  # 前一帧的BEV特征（用于时序融合）
         )
 
+        # ==================== 更新时序缓存 ====================
         if self.use_temporal_cache:
+            # 将当前帧的BEV特征存入缓存供下一帧使用
             self.store_cache(item['frame'].cpu(), output['bev_raw'].clone().detach())
 
         return output

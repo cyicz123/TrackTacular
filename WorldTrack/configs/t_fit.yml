@@ -1,20 +1,38 @@
+# ==================== 训练器配置文件 (t_fit.yml) ====================
+# 本文件定义训练过程的全局参数和回调函数
+
+# 随机种子，确保实验可重复性
 seed_everything: 80085
+
+# PyTorch Lightning 训练器配置
 trainer:
+  # 加速器类型：使用GPU加速
   accelerator: gpu
+  # 使用的GPU数量
   devices: 1
+  # 最大训练轮数（epochs）
   max_epochs: 50
+  # 梯度累积批次数：每8个batch累积一次梯度再更新（相当于扩大batch size）
   accumulate_grad_batches: 8
+  # 梯度裁剪阈值：防止梯度爆炸
   gradient_clip_val: 0.5
+  # 每隔多少个epoch进行一次验证
   check_val_every_n_epoch: 1
+  # 每隔多少步记录一次日志
   log_every_n_steps: 5
+  
+  # 回调函数配置
   callbacks:
+    # 学习率监控器：记录学习率变化
     - class_path: LearningRateMonitor
       init_args:
-        logging_interval: step
+        logging_interval: step  # 每步记录一次
+    
+    # 模型检查点保存器：保存最佳模型
     - class_path: ModelCheckpoint
       init_args:
-        monitor: val_center
-        mode: min
-        save_last: true
-        save_top_k: 5
-        filename: "model-{epoch:02d}-{val_loss:.2f}-{val_center:.2f}"
+        monitor: val_center  # 监控的指标：验证集中心点损失
+        mode: min  # 监控模式：值越小越好
+        save_last: true  # 是否保存最后一个epoch的模型
+        save_top_k: 5  # 保存最好的5个模型
+        filename: "model-{epoch:02d}-{val_loss:.2f}-{val_center:.2f}"  # 文件名格式

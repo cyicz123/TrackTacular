@@ -1,6 +1,18 @@
+# ==================== 模型配置文件 (m_liftnet.yml) ====================
+# 本文件定义使用的模型架构和参数
+
+# 模型配置
 model:
+  # 模型名称：使用 Liftnet 架构
+  # Liftnet：将2D图像特征通过深度预测"提升"到3D BEV空间
   model_name: liftnet
+  
+  # 2D特征维度：编码器输出的图像特征通道数
   feat2d_dim: 96
+
+# 数据配置覆盖
 data:
   init_args:
+    # 梯度累积批次数：每16个batch累积一次梯度
+    # 相当于将有效batch size扩大16倍（适用于显存较小的情况）
     accumulate_grad_batches: 16
